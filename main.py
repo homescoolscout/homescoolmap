@@ -1,69 +1,79 @@
 # main.py
+
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
-import psycopg2
 import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = FastAPI()
 
-# Database connection
-DATABASE_URL = os.getenv("DATABASE_URL")
+# CORS for frontend calls
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # you can restrict to your Wix site if needed
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-cursor = conn.cursor()
-
-# Create table if it doesn't exist
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS locations (
-    id SERIAL PRIMARY KEY,
-    name TEXT,
-    city TEXT NOT NULL,
-    state TEXT,
-    country TEXT NOT NULL,
-    lat DOUBLE PRECISION NOT NULL,
-    lng DOUBLE PRECISION NOT NULL
-);
-""")
-conn.commit()
-
-# Location schema
+# Models
 class Location(BaseModel):
     name: str
     city: str
-    state: Optional[str]
+    state: str
     country: str
     lat: float
     lng: float
 
-@app.get("/")
-def read_root():
-    return {"message": "Homescool Map API is running"}
+# DB Connection
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-@app.post("/locations")
-def add_location(location: Location):
-    try:
-        cursor.execute("""
-            INSERT INTO locations (name, city, state, country, lat, lng)
-            VALUES (%s, %s, %s, %s, %s, %s);
-        """, (location.name, location.city, location.state, location.country, location.lat, location.lng))
-        conn.commit()
-        return {"message": "Location added"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def get_db_connection():
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    return conn
 
+# Create table on startup (if not exists)
+@app.on_event("startup")
+def create_table():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS locations (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            city TEXT,
+            state TEXT,
+            country TEXT,
+            lat DOUBLE PRECISION,
+            lng DOUBLE PRECISION
+        );
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Routes
 @app.get("/locations")
 def get_locations():
-    cursor.execute("SELECT name, city, state, country, lat, lng FROM locations;")
-    rows = cursor.fetchall()
-    return [
-        {
-            "name": row[0],
-            "city": row[1],
-            "state": row[2],
-            "country": row[3],
-            "lat": row[4],
-            "lng": row[5]
-        }
-        for row in rows
-    ]
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM locations;")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+@app.post("/locations")
+def add_location(loc: Location):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO locations (name, city, state, country, lat, lng)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (loc.name, loc.city, loc.state, loc.country, loc.lat, loc.lng))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"message": "Location added successfully"}
